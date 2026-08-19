@@ -1,0 +1,509 @@
+/* ─────────────────────────────────────
+   GymBro — Styles
+   ───────────────────────────────────── */
+
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface2: #22263a;
+  --border: #2a2e3f;
+  --text: #e1e4ed;
+  --text-dim: #8b90a5;
+  --accent: #6c5ce7;
+  --accent2: #a29bfe;
+  --green: #00d2a0;
+  --red: #ff6b6b;
+  --orange: #ffa94d;
+  --yellow: #ffd43b;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 2px 12px rgba(0,0,0,0.3);
+  --font: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+.hidden { display: none !important; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  line-height: 1.5;
+}
+
+/* ── Header ── */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+header h1 {
+  font-size: 1.3rem;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.header-actions button {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.82rem;
+  transition: background 0.15s;
+}
+.header-actions button:hover { background: var(--border); }
+#current-year {
+  font-weight: 700;
+  font-size: 1.05rem;
+  min-width: 50px;
+  text-align: center;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  margin-right: 4px;
+}
+.status-dot.connected { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.status-dot.disconnected { background: var(--red); }
+
+/* ── Layout ── */
+main {
+  display: flex;
+  height: calc(100vh - 49px);
+  overflow: hidden;
+}
+
+.sidebar {
+  width: 370px;
+  min-width: 370px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding: 12px;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+  transition: margin-left 0.3s, opacity 0.3s, min-width 0.3s;
+}
+.sidebar.collapsed {
+  margin-left: -370px;
+  min-width: 0;
+  width: 0;
+  padding: 0;
+  border-right: none;
+  opacity: 0;
+  overflow: hidden;
+}
+
+.calendar-area {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 12px;
+}
+
+/* ── Cards ── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  box-shadow: var(--shadow);
+}
+.card h2 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--accent2);
+}
+
+/* ── Input Section ── */
+#nl-input {
+  width: 100%;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  padding: 8px 10px;
+  font-family: var(--font);
+  font-size: 0.85rem;
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.15s;
+}
+#nl-input:focus { border-color: var(--accent); }
+
+.btn-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+button {
+  font-family: var(--font);
+  font-size: 0.82rem;
+  cursor: pointer;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 6px 12px;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+}
+.btn-primary:hover { background: #7c6ff7; }
+.btn-secondary {
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.btn-secondary:hover { background: var(--border); }
+.btn-small {
+  padding: 4px 8px;
+  font-size: 0.78rem;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.btn-small:hover { background: var(--border); }
+.btn-danger {
+  background: var(--red);
+  color: #fff;
+}
+.btn-danger:hover { opacity: 0.85; }
+
+/* ── Parse Result ── */
+.parse-result {
+  margin-top: 6px;
+  padding: 8px;
+  background: var(--surface2);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  font-size: 0.82rem;
+}
+.parse-result .ex-list {
+  list-style: none;
+  margin-top: 2px;
+}
+.parse-result .ex-item {
+  padding: 2px 0;
+  font-size: 0.8rem;
+}
+.parse-result .confirm-row {
+  margin-top: 6px;
+  display: flex;
+  gap: 6px;
+}
+
+/* ── Detail Section ── */
+.detail-placeholder {
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  text-align: center;
+  padding: 12px 0;
+}
+.workout-detail .ex-row {
+  display: grid;
+  grid-template-columns: 1.5fr 0.6fr 0.6fr 1fr 1.5fr 28px;
+  gap: 4px;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  font-size: 0.8rem;
+}
+.workout-detail .ex-row.header {
+  font-weight: 600;
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.workout-detail input {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font);
+  font-size: 0.78rem;
+  width: 100%;
+  outline: none;
+}
+.workout-detail input:focus { border-color: var(--accent); }
+.detail-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 6px;
+}
+
+/* ── Calculator ── */
+.calc-row {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.calc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 4px;
+  flex: 1;
+  min-width: 55px;
+}
+.calc-field label {
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.calc-field input {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font);
+  font-size: 0.82rem;
+  outline: none;
+}
+.calc-field input:focus { border-color: var(--accent); }
+.calc-estimate {
+  margin-top: 2px;
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+.calc-estimate strong {
+  color: var(--accent2);
+  font-size: 1rem;
+}
+.calc-results {
+  margin-top: 6px;
+  font-size: 0.78rem;
+}
+.calc-results table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.calc-results th, .calc-results td {
+  padding: 3px 6px;
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+}
+.calc-results th {
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 0.7rem;
+}
+.match-exact { color: var(--green); }
+.match-approximate { color: var(--yellow); }
+.match-rough { color: var(--red); }
+
+/* ═══════════════════════════════════════
+   CALENDAR — Weekly Row View
+   ═══════════════════════════════════════ */
+
+.calendar-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 0.78rem;
+}
+
+/* Month group row */
+.calendar-month-label {
+  padding: 10px 0 4px 0;
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--accent2);
+  letter-spacing: 0.3px;
+}
+
+/* Day-of-week header row */
+.calendar-dow-row th {
+  text-align: center;
+  font-weight: 600;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 6px 4px;
+  border-bottom: 2px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  z-index: 2;
+}
+
+/* Week row */
+.calendar-week-row {
+  border-bottom: 1px solid var(--border);
+}
+
+/* Week number cell */
+.calendar-week-num {
+  text-align: center;
+  vertical-align: top;
+  padding: 6px 4px;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  font-weight: 500;
+  width: 36px;
+  border-right: 1px solid var(--border);
+}
+
+/* Day cell */
+.calendar-day {
+  vertical-align: top;
+  padding: 4px 3px;
+  width: calc((100% - 36px) / 7);
+  border-right: 1px solid rgba(255,255,255,0.04);
+  min-height: 60px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.calendar-day:hover {
+  background: rgba(255,255,255,0.02);
+}
+.calendar-day.out-of-month {
+  opacity: 0.3;
+}
+.calendar-day.today {
+  background: rgba(108,92,231,0.1);
+  border-left: 2px solid var(--accent);
+}
+.calendar-day.selected {
+  background: rgba(255,212,59,0.08);
+  border-left: 2px solid var(--yellow);
+}
+
+/* Day number */
+.calendar-day-num {
+  font-weight: 600;
+  font-size: 0.85rem;
+  margin-bottom: 2px;
+  color: var(--text);
+}
+.calendar-day.today .calendar-day-num {
+  color: var(--accent2);
+}
+
+/* Exercise entry inside a day cell */
+.day-exercise {
+  font-size: 0.7rem;
+  padding: 2px 3px;
+  margin: 1px 0;
+  border-radius: 3px;
+  background: var(--surface2);
+  border-left: 3px solid var(--accent);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+.day-exercise:hover {
+  background: var(--border);
+  white-space: normal;
+  overflow: visible;
+}
+.day-exercise .ex-name {
+  font-weight: 600;
+  color: var(--text);
+}
+.day-exercise .ex-detail {
+  color: var(--text-dim);
+}
+.day-exercise .ex-comment {
+  color: var(--orange);
+  font-style: italic;
+  display: block;
+  white-space: normal;
+  font-size: 0.67rem;
+}
+
+.empty-day {
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  text-align: center;
+  padding-top: 8px;
+}
+
+/* ── Toast ── */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  padding: 10px 20px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.9rem;
+  box-shadow: var(--shadow);
+  z-index: 999;
+  animation: toastIn 0.3s ease;
+  max-width: 400px;
+}
+.toast.success { border-color: var(--green); }
+.toast.error { border-color: var(--red); }
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #444; }
+
+/* ── Responsive ── */
+@media (max-width: 900px) {
+  .sidebar {
+    width: 320px;
+    min-width: 320px;
+  }
+  .sidebar.collapsed {
+    margin-left: -320px;
+    min-width: 0;
+  }
+}
+@media (max-width: 700px) {
+  main { flex-direction: column; }
+  .sidebar {
+    width: 100%;
+    min-width: 100%;
+    max-height: 40vh;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar.collapsed {
+    margin-left: 0;
+    max-height: 0;
+    min-width: 100%;
+    width: 100%;
+    padding: 0;
+    border-bottom: none;
+  }
+  .calendar-area { flex: none; height: auto; }
+}

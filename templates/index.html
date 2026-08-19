@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GymBro — Workout Tracker</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>🏋️ GymBro</h1>
+    <div class="header-actions">
+      <span id="lm-status" class="status-dot" title="LM Studio status">⚫</span>
+      <button id="btn-year-prev" title="Previous year">◀</button>
+      <span id="current-year"></span>
+      <button id="btn-year-next" title="Next year">▶</button>
+      <button id="btn-today" class="btn-small">Today</button>
+      <button id="btn-refresh" class="btn-small" title="Refresh data">🔄</button>
+      <button id="btn-toggle-sidebar" class="btn-small" title="Toggle sidebar">☰ Panel</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- Collapsible Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <!-- Natural Language Input -->
+      <section class="card input-section">
+        <h2>📝 Log Workout</h2>
+        <div class="input-row">
+          <textarea id="nl-input" rows="2"
+            placeholder='e.g. "today I did 5x5 on bench at 180kg" or "tuesday squat single at 210 and 7x5 at 180 rir 2"'
+          ></textarea>
+        </div>
+        <div class="btn-row">
+          <button id="btn-parse" class="btn-primary">🔍 Parse with LLM</button>
+          <button id="btn-quick-save" class="btn-secondary">⚡ Quick Save</button>
+        </div>
+        <div id="parse-result" class="parse-result hidden"></div>
+      </section>
+
+      <!-- Day Detail -->
+      <section class="card detail-section" id="detail-section">
+        <h2 id="detail-title">📋 No day selected</h2>
+        <div id="detail-content" class="detail-placeholder">
+          Click a date in the calendar to view or edit.
+        </div>
+      </section>
+
+      <!-- Calculator -->
+      <section class="card calculator-section">
+        <h2>🔢 Rep-Load Calculator</h2>
+        <div class="calc-field">
+          <label>Quick paste scheme:</label>
+          <div style="display:flex;gap:4px;">
+            <input type="text" id="calc-source-text" placeholder="e.g. 5x5 @ 180kg rir 2" style="flex:1;">
+            <button id="btn-parse-source" class="btn-small">Parse</button>
+          </div>
+        </div>
+        <div class="calc-row">
+          <div class="calc-field">
+            <label>Sets</label>
+            <input type="number" id="calc-src-sets" value="5" min="1" max="20">
+          </div>
+          <div class="calc-field">
+            <label>Reps</label>
+            <input type="number" id="calc-src-reps" value="5" min="1" max="30">
+          </div>
+          <div class="calc-field">
+            <label>Load (kg)</label>
+            <input type="number" id="calc-src-load" value="180" min="0" step="0.5">
+          </div>
+          <div class="calc-field">
+            <label>RIR</label>
+            <input type="number" id="calc-src-rir" value="0" min="0" max="10" step="0.5">
+          </div>
+        </div>
+        <div class="calc-estimate">
+          Est. 1RM: <strong id="calc-e1rm">—</strong> kg
+        </div>
+        <div class="calc-row" style="margin-top:8px;">
+          <div class="calc-field">
+            <label>Target Reps</label>
+            <input type="number" id="calc-tgt-reps" value="3" min="1" max="30">
+          </div>
+          <div class="calc-field">
+            <label>Target RIR</label>
+            <input type="number" id="calc-tgt-rir" value="0" min="0" max="10" step="0.5">
+          </div>
+          <div class="calc-field">
+            <label>Target Sets</label>
+            <input type="number" id="calc-tgt-sets" placeholder="auto" min="1" max="20">
+          </div>
+        </div>
+        <button id="btn-convert" class="btn-primary" style="margin-top:6px;">Convert</button>
+        <div id="calc-results" class="calc-results"></div>
+      </section>
+    </aside>
+
+    <!-- Calendar area -->
+    <section class="calendar-area">
+      <div id="calendar-container"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
