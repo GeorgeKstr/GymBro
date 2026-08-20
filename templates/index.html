@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>GymBro — Workout Tracker</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -17,6 +18,7 @@
       <button id="btn-today" class="btn-small">Today</button>
       <button id="btn-refresh" class="btn-small" title="Refresh data">🔄</button>
       <button id="btn-toggle-sidebar" class="btn-small" title="Toggle sidebar">☰ Panel</button>
+      <button id="btn-theme" class="btn-small" title="Toggle light/dark theme">🌙</button>
     </div>
   </header>
 
@@ -27,7 +29,7 @@
       <section class="card input-section">
         <h2>📝 Log Workout</h2>
         <div class="input-row">
-          <textarea id="nl-input" rows="2"
+          <textarea id="nl-input" rows="5"
             placeholder='e.g. "today I did 5x5 on bench at 180kg" or "tuesday squat single at 210 and 7x5 at 180 rir 2"'
           ></textarea>
         </div>
@@ -93,6 +95,12 @@
         </div>
         <button id="btn-convert" class="btn-primary" style="margin-top:6px;">Convert</button>
         <div id="calc-results" class="calc-results"></div>
+      </section>
+
+      <!-- Exercise List -->
+      <section class="card exercise-list-section">
+        <h2>💪 Exercises</h2>
+        <div id="exercise-list"></div>
       </section>
     </aside>
 

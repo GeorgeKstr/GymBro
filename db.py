@@ -4,10 +4,12 @@ SQLite database for GymBro: stores workouts, exercises, sets, and comments.
 
 import sqlite3
 import os
+import shutil
 from datetime import date, datetime
 from typing import Optional
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gymbro.db")
+BACKUP_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".backups")
 
 
 def get_conn() -> sqlite3.Connection:
@@ -33,7 +35,25 @@ def ensure_db():
         init_db()
 
 
+def backup_db():
+    """Create a timestamped backup of the database."""
+    if not os.path.exists(DB_PATH):
+        return
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = os.path.join(BACKUP_DIR, f"gymbro_{ts}.db")
+    shutil.copy2(DB_PATH, backup_path)
+    # Keep only last 10 backups
+    backups = sorted(
+        [f for f in os.listdir(BACKUP_DIR) if f.endswith('.db')],
+        reverse=True
+    )
+    for old in backups[10:]:
+        os.remove(os.path.join(BACKUP_DIR, old))
+
+
 def init_db():
+    backup_db()
     conn = get_conn()
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS workouts (
@@ -173,3 +193,57 @@ def get_all_exercises() -> list[dict]:
     """).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_exercise_progression(exercise_name: str, year: int | None = None) -> list[dict]:
+    """Return progression data for a given exercise: date, load, reps, sets, rir, e1rm.
+    For each workout date, returns the top set (highest e1RM) for that exercise."""
+    conn = get_conn()
+    if year:
+        rows = conn.execute("""
+            SELECT w.date, e.sets, e.reps, e.load_kg, e.rir
+            FROM exercises e
+            JOIN workouts w ON e.workout_id = w.id
+            WHERE LOWER(e.name) = LOWER(?)
+              AND w.date LIKE ?
+            ORDER BY w.date ASC
+        """, (exercise_name, f"{year}-%"))
+    else:
+        rows = conn.execute("""
+            SELECT w.date, e.sets, e.reps, e.load_kg, e.rir
+            FROM exercises e
+            JOIN workouts w ON e.workout_id = w.id
+            WHERE LOWER(e.name) = LOWER(?)
+            ORDER BY w.date ASC
+        """, (exercise_name,))
+
+    # Group by date, compute e1RM for each set, take the highest per day
+    from collections import defaultdict
+    by_date = defaultdict(list)
+    for r in rows:
+        r = dict(r)
+        if r["load_kg"] is not None and r["reps"] and r["reps"] > 0:
+            eff_reps = r["reps"] + (r["rir"] or 0)
+            e1rm = r["load_kg"] * (1 + eff_reps / 30.0)
+            by_date[r["date"]].append({
+                "sets": r["sets"],
+                "reps": r["reps"],
+                "load_kg": r["load_kg"],
+                "rir": r["rir"],
+                "e1rm": round(e1rm, 1)
+            })
+
+    result = []
+    for date_str in sorted(by_date.keys()):
+        entries = by_date[date_str]
+        top = max(entries, key=lambda x: x["e1rm"])
+        avg_e1rm = round(sum(e["e1rm"] for e in entries) / len(entries), 1)
+        result.append({
+            "date": date_str,
+            "top_set": top,
+            "avg_e1rm": avg_e1rm,
+            "total_sets": len(entries)
+        })
+
+    conn.close()
+    return result

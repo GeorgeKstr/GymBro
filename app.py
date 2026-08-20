@@ -46,7 +46,8 @@ def index(request: Request):
 
 @app.post("/api/parse")
 async def api_parse(request: Request):
-    """Parse natural language workout description into structured data."""
+    """Parse natural language workout description into structured data.
+    Returns {"workouts": [{workout_date, notes, exercises}, ...]} for multi-day support."""
     body = await request.json()
     text = body.get("text", "").strip()
     if not text:
@@ -71,59 +72,55 @@ async def api_parse(request: Request):
 
 @app.post("/api/workouts")
 async def api_save_workout(request: Request):
-    """Save a parsed workout (from /api/parse or manual entry)."""
+    """Save one or more workouts. Accepts:
+    - Single: {"workout_date": ..., "notes": ..., "exercises": [...]}
+    - Batch:  {"workouts": [{"workout_date": ..., "notes": ..., "exercises": [...]}, ...]}
+    """
     body = await request.json()
-    workout_date = body.get("workout_date")
-    notes = body.get("notes", "")
-    exercises = body.get("exercises", [])
 
-    if not workout_date:
-        raise HTTPException(status_code=400, detail="workout_date required")
+    # Detect format
+    if "workouts" in body:
+        workout_list = body["workouts"]
+    else:
+        workout_list = [body]
 
-    try:
-        w = db.get_or_create_workout(workout_date)
-        if notes:
-            db.update_workout_notes(workout_date, notes)
+    db.backup_db()  # safety net on every save
+    saved = []
+    for w_data in workout_list:
+        workout_date = w_data.get("workout_date")
+        notes = w_data.get("notes", "")
+        exercises = w_data.get("exercises", [])
 
-        # Replace existing exercises for this workout (delete old, insert new)
-        conn = db.get_conn()
-        conn.execute("DELETE FROM exercises WHERE workout_id=?", (w["id"],))
-        conn.commit()
-        conn.close()
+        if not workout_date:
+            continue
 
-        for ex in exercises:
-            db.add_exercise(
-                workout_id=w["id"],
-                name=ex.get("name", "unknown"),
-                sets=int(ex.get("sets", 0)),
-                reps=int(ex.get("reps", 0)),
-                load_kg=ex.get("load_kg"),
-                rir=ex.get("rir"),
-                comments=ex.get("comments", "")
-            )
+        def _save_one():
+            w = db.get_or_create_workout(workout_date)
+            if notes:
+                db.update_workout_notes(workout_date, notes)
+            conn = db.get_conn()
+            conn.execute("DELETE FROM exercises WHERE workout_id=?", (w["id"],))
+            conn.commit()
+            conn.close()
+            for ex in exercises:
+                db.add_exercise(
+                    workout_id=w["id"],
+                    name=ex.get("name", "unknown"),
+                    sets=int(ex.get("sets", 0)),
+                    reps=int(ex.get("reps", 0)),
+                    load_kg=ex.get("load_kg"),
+                    rir=ex.get("rir"),
+                    comments=ex.get("comments", "")
+                )
+            return db.get_workout(workout_date)
 
-        saved = db.get_workout(workout_date)
-        return JSONResponse(saved)
-    except Exception:
-        db.ensure_db()
-        # Retry once
-        w = db.get_or_create_workout(workout_date)
-        conn = db.get_conn()
-        conn.execute("DELETE FROM exercises WHERE workout_id=?", (w["id"],))
-        conn.commit()
-        conn.close()
-        for ex in exercises:
-            db.add_exercise(
-                workout_id=w["id"],
-                name=ex.get("name", "unknown"),
-                sets=int(ex.get("sets", 0)),
-                reps=int(ex.get("reps", 0)),
-                load_kg=ex.get("load_kg"),
-                rir=ex.get("rir"),
-                comments=ex.get("comments", "")
-            )
-        saved = db.get_workout(workout_date)
-        return JSONResponse(saved)
+        try:
+            saved.append(_save_one())
+        except Exception:
+            db.ensure_db()
+            saved.append(_save_one())
+
+    return JSONResponse({"saved": saved})
 
 
 # ──────────────────────────────────────────────
@@ -240,6 +237,19 @@ async def api_parse_scheme(request: Request):
         "load_kg": scheme.load_kg,
         "rir": scheme.rir
     })
+
+
+# ──────────────────────────────────────────────
+#  API: Exercise progression
+# ──────────────────────────────────────────────
+
+@app.get("/api/exercises/{exercise_name}/progression")
+def api_exercise_progression(exercise_name: str, year: Optional[int] = Query(default=None)):
+    """Return progression data (date, top-set e1RM, avg e1RM) for an exercise."""
+    if year is None:
+        year = date.today().year
+    data = db.get_exercise_progression(exercise_name, year)
+    return JSONResponse(data)
 
 
 # ──────────────────────────────────────────────

@@ -4,6 +4,7 @@ __pycache__/
 gymbro.db
 gymbro.db-wal
 gymbro.db-shm
+.backups/
 .env
 .venv/
 venv/

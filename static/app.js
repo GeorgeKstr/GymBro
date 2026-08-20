@@ -14,6 +14,8 @@ const state = {
   selectedDate: null,
   parsedWorkout: null,
   sidebarVisible: true,
+  chartExercise: null,  // name of exercise whose chart is shown
+  chartData: null,       // progression data for active chart
 };
 
 // ────────────────────────────────────────
@@ -91,6 +93,8 @@ async function loadWorkouts(year) {
     for (const w of data) state.workouts[w.date] = w;
     console.log(`GymBro: loaded ${data.length} workouts for ${year}`, Object.keys(state.workouts));
     renderCalendar(year);
+    renderExerciseList();
+    clearChart();
   } catch (e) {
     console.error('GymBro: loadWorkouts failed', e);
     showToast(`Failed to load workouts: ${e.message}`, "error");
@@ -168,48 +172,89 @@ function renderCalendar(year) {
     cursor.setDate(cursor.getDate() + 7);
   }
 
-  // Render rows
+  // Group weeks by month for chart insertion
+  const monthGroups = {};
   for (const row of weekRows) {
-    // Month label if month changed
-    if (row.month !== lastMonth) {
-      lastMonth = row.month;
-      html += `<tr><td colspan="8" class="calendar-month-label">${MONTH_NAMES[row.month]} ${year}</td></tr>`;
+    if (!monthGroups[row.month]) monthGroups[row.month] = [];
+    monthGroups[row.month].push(row);
+  }
+
+  // Build chart data lookup: date → e1rm
+  const chartLookup = {};
+  if (state.chartData) {
+    for (const d of state.chartData) {
+      chartLookup[d.date] = d.top_set.e1rm;
     }
+  }
 
-    html += '<tr class="calendar-week-row">';
-    html += `<td class="calendar-week-num">${row.weekNum}</td>`;
+  // Render rows with monthly chart rows inserted
+  for (let m = 0; m < 12; m++) {
+    const rows = monthGroups[m];
+    if (!rows) continue;
 
-    for (const d of row.days) {
-      const dateStr = fmtDate(d);
-      const inYear = d.getFullYear() === year;
-      const isToday = dateStr === state.todaysDate;
-      const isSelected = dateStr === state.selectedDate;
-      const workout = state.workouts[dateStr];
+    // Month label
+    html += `<tr><td colspan="8" class="calendar-month-label">${MONTH_NAMES[m]} ${year}</td></tr>`;
 
-      let cls = 'calendar-day';
-      if (!inYear) cls += ' out-of-month';
-      if (isToday) cls += ' today';
-      if (isSelected) cls += ' selected';
+    // Week rows for this month
+    for (const row of rows) {
+      html += '<tr class="calendar-week-row">';
+      html += `<td class="calendar-week-num">${row.weekNum}</td>`;
 
-      html += `<td class="${cls}" data-date="${dateStr}">`;
-      html += `<div class="calendar-day-num">${d.getDate()}</div>`;
+      for (const d of row.days) {
+        const dateStr = fmtDate(d);
+        const inYear = d.getFullYear() === year;
+        const isToday = dateStr === state.todaysDate;
+        const isSelected = dateStr === state.selectedDate;
+        const workout = state.workouts[dateStr];
 
-      if (workout && workout.exercises && workout.exercises.length > 0) {
-        for (const ex of workout.exercises) {
-          html += renderExerciseBadge(ex);
+        let cls = 'calendar-day';
+        if (!inYear) cls += ' out-of-month';
+        if (isToday) cls += ' today';
+        if (isSelected) cls += ' selected';
+        // Highlight if chart data exists for this date
+        if (chartLookup[dateStr]) cls += ' chart-highlight';
+
+        html += `<td class="${cls}" data-date="${dateStr}">`;
+        html += `<div class="calendar-day-num">${d.getDate()}</div>`;
+
+        if (workout && workout.exercises && workout.exercises.length > 0) {
+          for (const ex of workout.exercises) {
+            html += renderExerciseBadge(ex);
+          }
+        } else {
+          html += '<div class="empty-day">—</div>';
         }
-      } else {
-        html += '<div class="empty-day">—</div>';
+
+        html += '</td>';
       }
 
-      html += '</td>';
+      html += '</tr>';
     }
 
-    html += '</tr>';
+    // Monthly chart row (if chart active and month has data)
+    if (state.chartData && state.chartExercise) {
+      const monthDates = rows.flatMap(r => r.days.map(d => fmtDate(d)));
+      const monthPoints = state.chartData.filter(d => monthDates.includes(d.date));
+      if (monthPoints.length >= 2) {
+        html += `<tr class="chart-row"><td colspan="8"><div class="mini-chart"><div class="chart-title">${MONTH_NAMES[m]} — ${escHtml(state.chartExercise)}</div><canvas id="chart-m${m}"></canvas></div></td></tr>`;
+      }
+      // Spacer after every month
+      html += '<tr class="chart-spacer"><td colspan="8"></td></tr>';
+    }
+  }
+
+  // Year chart row at bottom
+  if (state.chartData && state.chartExercise && state.chartData.length >= 2) {
+    html += `<tr class="chart-row chart-row-year"><td colspan="8"><div class="mini-chart year-chart"><div class="chart-title">📈 Full Year — ${escHtml(state.chartExercise)}</div><canvas id="chart-year"></canvas></div></td></tr>`;
   }
 
   html += '</tbody></table>';
   dom.calendarContainer.innerHTML = html;
+
+  // Draw all charts
+  if (state.chartData && state.chartExercise) {
+    setTimeout(() => drawAllCharts(monthGroups, year), 50);
+  }
 
   // Click handlers on day cells
   dom.calendarContainer.querySelectorAll('.calendar-day').forEach(cell => {
@@ -268,19 +313,22 @@ function renderDetail(dateStr) {
   }
 
   let html = '<div class="workout-detail">';
-  html += '<div class="ex-row header">';
-  html += '<span>Exercise</span><span>Sets</span><span>Reps</span><span>Load</span><span>Comments</span><span></span>';
-  html += '</div>';
 
   workout.exercises.forEach((ex) => {
     html += `
       <div class="ex-row" data-id="${ex.id}">
-        <input type="text" class="ex-name" value="${escHtml(ex.name)}" data-field="name">
-        <input type="number" class="ex-sets" value="${ex.sets}" data-field="sets" min="0">
-        <input type="number" class="ex-reps" value="${ex.reps}" data-field="reps" min="0">
-        <input type="number" class="ex-load" value="${ex.load_kg ?? ''}" data-field="load_kg" placeholder="—" step="0.5">
-        <input type="text" class="ex-comments" value="${escHtml(ex.comments || '')}" data-field="comments" placeholder="notes">
-        <button class="btn-small btn-danger ex-delete" data-id="${ex.id}">✕</button>
+        <div class="ex-line1">
+          <input type="text" class="ex-name" value="${escHtml(ex.name)}" data-field="name" placeholder="Exercise">
+          <button class="btn-small btn-danger ex-delete" data-id="${ex.id}">✕</button>
+        </div>
+        <div class="ex-line2">
+          <input type="number" class="ex-sets" value="${ex.sets}" data-field="sets" min="0" placeholder="Sets">
+          <span style="color:var(--text-dim);font-size:0.7rem;">×</span>
+          <input type="number" class="ex-reps" value="${ex.reps}" data-field="reps" min="0" placeholder="Reps">
+          <span style="color:var(--text-dim);font-size:0.7rem;">@</span>
+          <input type="number" class="ex-load" value="${ex.load_kg ?? ''}" data-field="load_kg" placeholder="kg" step="0.5">
+          <input type="text" class="ex-comments" value="${escHtml(ex.comments || '')}" data-field="comments" placeholder="notes...">
+        </div>
       </div>`;
   });
 
@@ -417,29 +465,36 @@ async function quickSave() {
 }
 
 function renderParseResult(parsed) {
-  const exs = parsed.exercises || [];
-  if (exs.length === 0) {
+  // New format: {"workouts": [...]}
+  const workouts = parsed.workouts || [];
+  if (workouts.length === 0) {
     dom.parseResult.innerHTML = '<p style="color:var(--orange)">No exercises detected. Try being more specific.</p>';
     return;
   }
-  let html = `<p style="margin-bottom:4px;font-weight:600;">📅 ${parsed.workout_date}</p>`;
-  html += '<ul class="ex-list">';
-  exs.forEach(ex => {
-    const loadStr = ex.load_kg ? ` @ ${ex.load_kg}kg` : '';
-    const rirStr = ex.rir != null ? ` RIR ${ex.rir}` : '';
-    const cmtStr = ex.comments ? ` — ${ex.comments}` : '';
-    html += `<li class="ex-item">🏋️ <strong>${ex.name}</strong>: ${ex.sets}×${ex.reps}${loadStr}${rirStr}${cmtStr}</li>`;
+
+  let html = '';
+  workouts.forEach((w, wi) => {
+    html += `<p style="margin-bottom:2px;font-weight:600;">📅 ${w.workout_date}</p>`;
+    html += '<ul class="ex-list">';
+    (w.exercises || []).forEach(ex => {
+      const loadStr = ex.load_kg ? ` @ ${ex.load_kg}kg` : '';
+      const rirStr = ex.rir != null ? ` RIR ${ex.rir}` : '';
+      const cmtStr = ex.comments ? ` — ${ex.comments}` : '';
+      html += `<li class="ex-item">🏋️ <strong>${ex.name}</strong>: ${ex.sets}×${ex.reps}${loadStr}${rirStr}${cmtStr}</li>`;
+    });
+    html += '</ul>';
+    if (w.notes) {
+      html += `<p style="margin-top:2px;font-size:0.75rem;color:var(--text-dim)">📝 ${escHtml(w.notes)}</p>`;
+    }
   });
-  html += '</ul>';
-  if (parsed.notes) {
-    html += `<p style="margin-top:2px;font-size:0.75rem;color:var(--text-dim)">📝 ${escHtml(parsed.notes)}</p>`;
-  }
+
   html += `
     <div class="confirm-row">
-      <button id="btn-confirm-save" class="btn-primary">✅ Confirm & Save</button>
+      <button id="btn-confirm-save" class="btn-primary">✅ Confirm & Save All (${workouts.length} day${workouts.length>1?'s':''})</button>
       <button id="btn-cancel-parse" class="btn-secondary">Cancel</button>
     </div>`;
   dom.parseResult.innerHTML = html;
+
   $("#btn-confirm-save")?.addEventListener("click", confirmSave);
   $("#btn-cancel-parse")?.addEventListener("click", () => {
     state.parsedWorkout = null;
@@ -450,16 +505,18 @@ function renderParseResult(parsed) {
 async function confirmSave() {
   if (!state.parsedWorkout) return;
   const pw = state.parsedWorkout;
-  console.log('GymBro: saving workout', pw);
+  console.log('GymBro: saving workouts', pw);
   try {
-    const saved = await api("POST", "/api/workouts", pw);
-    console.log('GymBro: saved response', saved);
+    const result = await api("POST", "/api/workouts", pw);
+    console.log('GymBro: saved', result);
     dom.parseResult.classList.add("hidden");
     dom.nlInput.value = "";
     state.parsedWorkout = null;
     await refreshWorkouts();
-    selectDate(pw.workout_date);
-    showToast(`Workout saved for ${pw.workout_date}! 💪`);
+    // Select the first workout date
+    const dates = result.saved.map(s => s.date);
+    if (dates.length > 0) selectDate(dates[0]);
+    showToast(`Saved ${dates.length} workout${dates.length>1?'s':''}! 💪`);
   } catch (e) {
     console.error('GymBro: save failed', e);
     showToast(`Save failed: ${e.message}`, "error");
@@ -556,7 +613,329 @@ function escHtml(str) {
 
 async function refreshWorkouts() {
   await loadWorkouts(state.currentYear);
+  renderExerciseList();
 }
+
+// ────────────────────────────────────────
+// Exercise List & Progression Chart
+// ────────────────────────────────────────
+
+function getUniqueExercises() {
+  const map = new Map(); // name → { count, lastLoad }
+  for (const w of Object.values(state.workouts)) {
+    for (const ex of w.exercises) {
+      const key = ex.name.toLowerCase();
+      if (!map.has(key)) {
+        map.set(key, { name: ex.name, count: 0, lastLoad: 0 });
+      }
+      const entry = map.get(key);
+      entry.count++;
+      if (ex.load_kg && ex.load_kg > entry.lastLoad) entry.lastLoad = ex.load_kg;
+    }
+  }
+  // Sort by count desc
+  return [...map.values()].sort((a, b) => b.count - a.count);
+}
+
+function renderExerciseList() {
+  const exercises = getUniqueExercises();
+  const container = $("#exercise-list");
+
+  if (exercises.length === 0) {
+    container.innerHTML = '<div class="detail-placeholder" style="font-size:0.8rem;">No exercises logged yet.</div>';
+    return;
+  }
+
+  let html = '';
+  for (const ex of exercises) {
+    html += `
+      <div class="ex-list-item" data-exercise="${escHtml(ex.name)}">
+        <span class="ex-name" title="${escHtml(ex.name)}">${escHtml(ex.name)}</span>
+        <span class="ex-count">${ex.count}×</span>
+        <button class="ex-chart-toggle" data-exercise="${escHtml(ex.name)}">📈</button>
+      </div>`;
+  }
+  container.innerHTML = html;
+
+  // Attach chart toggle handlers
+  container.querySelectorAll('.ex-chart-toggle').forEach(btn => {
+    btn.addEventListener('click', () => toggleChart(btn.dataset.exercise, btn));
+  });
+}
+
+function escAttr(s) {
+  return s.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
+async function toggleChart(exerciseName, btn) {
+  // If already showing this exercise, close it
+  if (state.chartExercise === exerciseName && state.chartData) {
+    clearChart();
+    btn.classList.remove('active');
+    return;
+  }
+
+  // Deactivate all toggle buttons
+  document.querySelectorAll('.ex-chart-toggle.active').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+
+  try {
+    const data = await api("GET", `/api/exercises/${encodeURIComponent(exerciseName)}/progression?year=${state.currentYear}`);
+    if (data.length < 2) {
+      btn.classList.remove('active');
+      showToast(`${exerciseName}: need ≥2 sessions with load data for charts`, 'error');
+      return;
+    }
+    state.chartExercise = exerciseName;
+    state.chartData = data;
+    renderCalendar(state.currentYear);
+  } catch (e) {
+    btn.classList.remove('active');
+    showToast(`Failed to load chart: ${e.message}`, 'error');
+  }
+}
+
+function clearChart() {
+  state.chartExercise = null;
+  state.chartData = null;
+  document.querySelectorAll('.ex-chart-toggle.active').forEach(b => b.classList.remove('active'));
+  renderCalendar(state.currentYear);
+}
+
+function drawAllCharts(monthGroups, year) {
+  const data = state.chartData;
+  if (!data || data.length < 2) return;
+
+  const allVals = data.map(d => d.top_set.e1rm);
+  const gMin = Math.min(...allVals);
+  const gMax = Math.max(...allVals);
+  const gRange = gMax - gMin || 1;
+
+  // Draw each monthly chart
+  for (let m = 0; m < 12; m++) {
+    const canvas = document.getElementById(`chart-m${m}`);
+    if (!canvas) continue;
+
+    const rows = monthGroups[m];
+    if (!rows) continue;
+    const monthDates = rows.flatMap(r => r.days.map(d => fmtDate(d)));
+    const pts = data.filter(d => monthDates.includes(d.date));
+    if (pts.length < 2) continue;
+
+    drawMiniChart(canvas, pts, gMin, gMax, gRange);
+  }
+
+  // Draw year chart
+  const yearCanvas = document.getElementById('chart-year');
+  if (yearCanvas) {
+    drawYearChart(yearCanvas, data, gMin, gMax, gRange);
+  }
+}
+
+function drawMiniChart(canvas, pts, gMin, gMax, gRange) {
+  const container = canvas.parentElement;
+  const W = container.clientWidth;
+  const H = 100;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const cs = getComputedStyle(document.body);
+  const chartBg = cs.getPropertyValue('--chart-bg').trim();
+  const chartGrid = cs.getPropertyValue('--chart-grid').trim();
+
+  const pad = { top: 14, right: 12, bottom: 20, left: 38 };
+  const pw = W - pad.left - pad.right;
+  const ph = H - pad.top - pad.bottom;
+
+  ctx.fillStyle = chartBg;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.strokeStyle = chartGrid;
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i <= 2; i++) {
+    const y = pad.top + (i / 2) * ph;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(W - pad.right, y);
+    ctx.stroke();
+    const val = gMax - (i / 2) * gRange;
+    ctx.fillStyle = '#8b90a5';
+    ctx.font = 'bold 10px Inter, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(Math.round(val), pad.left - 4, y + 4);
+  }
+
+  const xScale = i => pad.left + (i / Math.max(pts.length - 1, 1)) * pw;
+  const yScale = v => pad.top + ph - ((v - gMin) / gRange) * ph;
+
+  ctx.strokeStyle = '#a29bfe';
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  pts.forEach((p, i) => {
+    const x = xScale(i);
+    const y = yScale(p.top_set.e1rm);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  pts.forEach((p, i) => {
+    const x = xScale(i);
+    const y = yScale(p.top_set.e1rm);
+    ctx.fillStyle = '#a29bfe';
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  [0, pts.length - 1].forEach(i => {
+    if (i < 0 || i >= pts.length) return;
+    const x = xScale(i);
+    const y = yScale(pts[i].top_set.e1rm);
+    ctx.fillStyle = '#e1e4ed';
+    ctx.font = 'bold 11px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(Math.round(pts[i].top_set.e1rm), x, y - 10);
+  });
+
+  // Store point positions for hover interaction
+  canvas._chartPoints = pts.map((p, i) => ({
+    x: xScale(i),
+    date: p.date
+  }));
+
+  // Hover: highlight nearest calendar cell
+  canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    // Find nearest point
+    let best = null, bestDist = Infinity;
+    for (const pt of canvas._chartPoints) {
+      const d = Math.abs(pt.x - mx);
+      if (d < bestDist) { bestDist = d; best = pt; }
+    }
+    // Highlight corresponding cell, clear others
+    document.querySelectorAll('.calendar-day.chart-hover').forEach(c => c.classList.remove('chart-hover'));
+    if (best && bestDist < 40) {
+      const cell = document.querySelector(`.calendar-day[data-date="${best.date}"]`);
+      if (cell) cell.classList.add('chart-hover');
+    }
+  });
+  canvas.addEventListener('mouseleave', () => {
+    document.querySelectorAll('.calendar-day.chart-hover').forEach(c => c.classList.remove('chart-hover'));
+  });
+}
+
+function drawYearChart(canvas, data, gMin, gMax, gRange) {
+  const container = canvas.parentElement;
+  const W = container.clientWidth;
+  const H = 160;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  const cs = getComputedStyle(document.body);
+  const chartBg = cs.getPropertyValue('--chart-bg').trim();
+  const chartGrid = cs.getPropertyValue('--chart-grid').trim();
+
+  const pad = { top: 14, right: 16, bottom: 28, left: 42 };
+  const pw = W - pad.left - pad.right;
+  const ph = H - pad.top - pad.bottom;
+
+  ctx.fillStyle = chartBg;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.strokeStyle = chartGrid;
+  ctx.lineWidth = 0.5;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.top + (i / 4) * ph;
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(W - pad.right, y);
+    ctx.stroke();
+    const val = gMax - (i / 4) * gRange;
+    ctx.fillStyle = '#8b90a5';
+    ctx.font = 'bold 11px Inter, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(Math.round(val), pad.left - 5, y + 4);
+  }
+
+  const xScale = i => pad.left + (i / Math.max(data.length - 1, 1)) * pw;
+  const yScale = v => pad.top + ph - ((v - gMin) / gRange) * ph;
+
+  const months = ['J','F','M','A','M','J','J','A','S','O','N','D'];
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#8b90a5';
+  ctx.font = 'bold 10px Inter, sans-serif';
+  for (let m = 0; m < 12; m++) {
+    const pts = data.filter(d => new Date(d.date + 'T00:00:00').getMonth() === m);
+    if (pts.length > 0) {
+      const first = data.findIndex(d => d.date === pts[0].date);
+      const last = data.findIndex(d => d.date === pts[pts.length - 1].date);
+      const midX = xScale((first + last) / 2);
+      ctx.fillText(months[m], midX, H - pad.bottom + 14);
+    }
+  }
+
+  data.forEach((d, i) => {
+    const x = xScale(i);
+    ctx.strokeStyle = chartGrid;
+    ctx.beginPath();
+    ctx.moveTo(x, pad.top + ph);
+    ctx.lineTo(x, pad.top + ph + 4);
+    ctx.stroke();
+  });
+
+  ctx.strokeStyle = '#a29bfe';
+  ctx.lineWidth = 2.5;
+  ctx.lineJoin = 'round';
+  ctx.shadowColor = '#a29bfe';
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  data.forEach((d, i) => {
+    const x = xScale(i);
+    const y = yScale(d.top_set.e1rm);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  data.forEach((d, i) => {
+    const x = xScale(i);
+    const y = yScale(d.top_set.e1rm);
+    ctx.fillStyle = '#a29bfe';
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = chartBg;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  });
+
+  [0, data.length - 1].forEach(i => {
+    if (i < 0 || i >= data.length) return;
+    const x = xScale(i);
+    const y = yScale(data[i].top_set.e1rm);
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 12px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(Math.round(data[i].top_set.e1rm), x, y - 14);
+  });
+}
+
 
 // ────────────────────────────────────────
 // Init
@@ -611,6 +990,23 @@ function init() {
   dom.btnConvert.addEventListener("click", convertScheme);
   [dom.calcSrcSets, dom.calcSrcReps, dom.calcSrcLoad, dom.calcSrcRir].forEach(el => {
     el.addEventListener("input", updateE1rm);
+  });
+
+  // Theme toggle
+  const btnTheme = $("#btn-theme");
+  // Load saved theme
+  if (localStorage.getItem('gymbro-theme') === 'light') {
+    document.body.classList.add('light');
+    btnTheme.textContent = '☀️';
+  }
+  btnTheme.addEventListener('click', () => {
+    const isLight = document.body.classList.toggle('light');
+    localStorage.setItem('gymbro-theme', isLight ? 'light' : 'dark');
+    btnTheme.textContent = isLight ? '☀️' : '🌙';
+    // Redraw charts if visible
+    if (state.chartData && state.chartExercise) {
+      renderCalendar(state.currentYear);
+    }
   });
 
   // Init

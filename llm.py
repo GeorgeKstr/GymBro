@@ -18,39 +18,45 @@ PARSE_SYSTEM_PROMPT = """You are a gym workout parser. Extract structured workou
 Output ONLY valid JSON — no markdown, no explanation. Use this exact schema:
 
 {{
-  "workout_date": "YYYY-MM-DD",
-  "notes": "any overall notes or empty string",
-  "exercises": [
+  "workouts": [
     {{
-      "name": "exercise name (lowercase, standardised)",
-      "sets": number,
-      "reps": number,
-      "load_kg": number or null,
-      "rir": number or null,
-      "comments": "any specific comments about this exercise"
+      "workout_date": "YYYY-MM-DD",
+      "notes": "any overall notes or empty string",
+      "exercises": [
+        {{
+          "name": "exercise name (lowercase, standardised)",
+          "sets": number,
+          "reps": number,
+          "load_kg": number or null,
+          "rir": number or null,
+          "comments": "any specific comments about this exercise"
+        }}
+      ]
     }}
   ]
 }}
 
 Rules:
+- ALWAYS output the "workouts" array, even if there is only one workout.
+- The user may describe MULTIPLE DAYS. Split them into separate workout objects — one per date.
 - If the user says "today", use TODAY'S DATE.
-- If the user says "this tuesday" / "last Monday" / "Wednesday", resolve relative to today.
+- If the user says "Monday" / "this tuesday" / "last Wednesday" etc., resolve each relative to today.
 - If they say "yesterday" or "tomorrow", resolve those.
-- If no date is mentioned, assume today.
+- If no date is mentioned for a group of exercises, assume today.
 - Sets×reps: "5x5" means 5 sets of 5 reps. "single" means 1 set of 1 rep.
 - Load: "180kg", "180", "at 180", "@180" → load_kg=180. "135lb" → load_kg≈61.2.
 - RIR (Reps In Reserve): "rir 2", "2 rir", "2 in the tank" → rir=2.
 - Comments: anything about technique, difficulty, sensation, etc.
 - Standardise exercise names (e.g., "bench" → "bench press", "squats" → "squat").
-- If multiple exercises are mentioned, list them all.
+- If multiple exercises are mentioned for the same day, put them all in that day's exercises array.
 - If sets/reps are missing, use null but try to infer from context.
 
 Examples:
 Input: "today I did 5x5 on bench at 180kg"
-Output: {{"workout_date":"<today>","notes":"","exercises":[{{"name":"bench press","sets":5,"reps":5,"load_kg":180,"rir":null,"comments":""}}]}}
+Output: {{"workouts":[{{"workout_date":"<today>","notes":"","exercises":[{{"name":"bench press","sets":5,"reps":5,"load_kg":180,"rir":null,"comments":""}}]}}]}}
 
-Input: "this tuesday squat single at 210 and 7x5 at 180"
-Output: {{"workout_date":"<this tuesday>","notes":"","exercises":[{{"name":"squat","sets":1,"reps":1,"load_kg":210,"rir":null,"comments":""}},{{"name":"squat","sets":7,"reps":5,"load_kg":180,"rir":null,"comments":""}}]}}
+Input: "monday bench 5x5 at 180, tuesday squat 3x8 at 140 rir 2"
+Output: {{"workouts":[{{"workout_date":"<monday>","notes":"","exercises":[{{"name":"bench press","sets":5,"reps":5,"load_kg":180,"rir":null,"comments":""}}]}},{{"workout_date":"<tuesday>","notes":"","exercises":[{{"name":"squat","sets":3,"reps":8,"load_kg":140,"rir":2,"comments":""}}]}}]}}
 
 Today's date is: {today}
 This Tuesday is: {this_tuesday}
@@ -126,67 +132,74 @@ async def parse_workout_text(text: str, today: Optional[date] = None,
         return fallback_parse(text, today)
 
 
-def fallback_parse(text: str, today: date) -> dict:
-    """Regex-based fallback parser when LM Studio is not available."""
-    text_lower = text.lower().strip()
-
-    # --- Date resolution ---
-    workout_date = today
-    if "today" in text_lower:
-        workout_date = today
-    elif "yesterday" in text_lower:
-        workout_date = today - timedelta(days=1)
-    elif "tomorrow" in text_lower:
-        workout_date = today + timedelta(days=1)
-    elif "this tuesday" in text_lower:
-        days_until_tuesday = (1 - today.weekday()) % 7
-        if today.weekday() > 1:
-            workout_date = today - timedelta(days=(today.weekday() - 1))
-        else:
-            workout_date = today + timedelta(days=days_until_tuesday if days_until_tuesday > 0 else 0)
-    elif "last" in text_lower and any(d in text_lower for d in
-                                       ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]):
-        day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-        for i, dn in enumerate(day_names):
-            if dn in text_lower:
-                days_back = (today.weekday() - i) % 7
-                if days_back == 0:
-                    days_back = 7
-                workout_date = today - timedelta(days=days_back)
-                break
-
-    # --- Exercise parsing ---
-    # Pattern: match exercise name followed by rep scheme and optional weight
-    # e.g. "bench 5x5 at 180kg" or "squat single at 210"
+def _resolve_day(day_name: str, today: date) -> date:
+    """Resolve a day name like 'monday', 'last tuesday', 'this wednesday' to a date.
     
-    # First, find all "X at Y" or "X @ Y" patterns for loads
-    # More robust: split on common separators
-    exercises = []
+    Default interpretation (for logging past workouts):
+    - "Monday" → most recent Monday (including today if today is Monday)
+    - "This Monday" → upcoming Monday (or today if today is Monday)  
+    - "Last Monday" → Monday of previous week
+    """
+    day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    day_name = day_name.lower().strip()
 
-    # Try to find exercise blocks: "exercise_name NxM at/@ weight" patterns
-    # Also handle "single", "double", "triple"
-    text_clean = re.sub(r'(?:at|@)\s*(\d+(?:\.\d+)?)\s*(kg|lb)?', r'@\1\2', text_lower)
-    
-    # Pattern for exercise blocks:
-    # (name) (sets)x(reps) or (name) single/double/triple ... @weight ... rir X
+    # Handle "last X"
+    is_last = day_name.startswith("last ")
+    if is_last:
+        day_name = day_name[5:]
+
+    # Handle "this X"
+    is_this = day_name.startswith("this ")
+    if is_this:
+        day_name = day_name[5:]
+
+    if day_name not in day_names:
+        return today
+
+    target_dow = day_names.index(day_name)  # Monday=0
+    today_dow = today.weekday()  # Monday=0
+
+    if is_last:
+        # "Last Monday" = Monday of previous week
+        days_back = (today_dow - target_dow) % 7
+        if days_back == 0:
+            days_back = 7
+        return today - timedelta(days=days_back)
+    elif is_this:
+        # "This Monday" = upcoming (or today)
+        if today_dow == target_dow:
+            return today
+        days_ahead = (target_dow - today_dow) % 7
+        if days_ahead == 0:
+            days_ahead = 7
+        return today + timedelta(days=days_ahead)
+    else:
+        # Bare day name (e.g., "Monday") → most recent occurrence
+        days_back = (today_dow - target_dow) % 7
+        return today - timedelta(days=days_back)
+
+
+def _parse_exercise_blocks(text: str) -> list[dict]:
+    """Extract exercise entries from text using regex."""
+    text_clean = re.sub(r'\b(?:at|@)\s*(\d+(?:\.\d+)?)\s*(kg|lb)?', r'@\1\2', text.lower())
     block_pat = r'([a-z][a-z\s]*?)\s*(\d+x\d+|\d+\s*x\s*\d+|single|double|triple)\s*(?:@\s*([\d.]+)\s*(kg|lb)?)?(?:\s*rir\s*(\d+))?'
-    
-    matches = re.findall(block_pat, text_lower)
-    
-    for m in matches:
+
+    exercises = []
+    for m in re.findall(block_pat, text_clean):
         name = m[0].strip().rstrip(',').rstrip('and').strip()
-        if not name or len(name) < 2:
+        # Strip leading "and "
+        name = re.sub(r'^and\s+', '', name).strip()
+        if not name or len(name) < 2 or name in ('and', 'or', 'then'):
             continue
-            
+
         scheme_str = m[1].strip()
-        if scheme_str in ('single',):
+        if scheme_str == 'single':
             sets, reps = 1, 1
-        elif scheme_str in ('double',):
+        elif scheme_str == 'double':
             sets, reps = 1, 2
-        elif scheme_str in ('triple',):
+        elif scheme_str == 'triple':
             sets, reps = 1, 3
         else:
-            # Clean up "5 x 5" → "5x5"
             scheme_clean = re.sub(r'\s+', '', scheme_str)
             parts = scheme_clean.split('x')
             if len(parts) == 2:
@@ -202,11 +215,7 @@ def fallback_parse(text: str, today: date) -> dict:
         load_unit = m[3] if m[3] else 'kg'
         if load_val and load_unit == 'lb':
             load_val = round(load_val * 0.453592, 1)
-        
         rir_val = float(m[4]) if m[4] else None
-
-        # Extract comments: anything after rir or between exercises
-        comments = ""
 
         exercises.append({
             "name": _standardize_name(name),
@@ -214,28 +223,84 @@ def fallback_parse(text: str, today: date) -> dict:
             "reps": reps,
             "load_kg": load_val,
             "rir": rir_val,
-            "comments": comments
+            "comments": ""
         })
+    return exercises
 
-    # Extract any overall notes (text that isn't part of exercise blocks)
-    notes = ""
-    # Remove exercise blocks from text to get notes
-    remaining = text_lower
-    for pat in [r'\d+x\d+', r'single', r'double', r'triple', r'@[\d.]+', r'rir\s*\d+',
-                r'this tuesday', r'today', r'yesterday', r'tomorrow', r'last \w+day',
-                r'i did', r'on ']:
-        remaining = re.sub(pat, '', remaining)
-    # Clean up remaining
-    remaining = re.sub(r'[,;]\s*[,;]', '', remaining)
-    remaining = ' '.join(remaining.split()).strip()
-    if remaining and len(remaining) > 5:
-        notes = remaining
 
-    return {
-        "workout_date": workout_date.isoformat(),
-        "notes": notes,
-        "exercises": exercises if exercises else []
-    }
+def fallback_parse(text: str, today: date) -> dict:
+    """Regex-based fallback parser with multi-day support."""
+    text_lower = text.lower().strip()
+    day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+
+    # Try to split by day markers: "Monday ... Tuesday ..." or "today ... yesterday ..."
+    # Build a pattern to detect day boundaries
+    day_patterns = [
+        r'\b(last\s+)?(this\s+)?(?:' + '|'.join(day_names) + r')\b',
+        r'\btoday\b',
+        r'\b(?:yesterday|tomorrow)\b',
+    ]
+    combined = '(' + '|'.join(day_patterns) + ')'
+
+    # Find all day markers and their positions
+    segments = []  # [(date, text_between_markers)]
+    current_date = today
+
+    matches = list(re.finditer(combined, text_lower))
+
+    if not matches:
+        # No day markers found — treat entire text as today
+        exercises = _parse_exercise_blocks(text_lower)
+        return {"workouts": [{
+            "workout_date": today.isoformat(),
+            "notes": "",
+            "exercises": exercises
+        }]}
+
+    for i, m in enumerate(matches):
+        marker = m.group(0).strip()
+
+        # Resolve the date for this marker
+        if marker == "today":
+            current_date = today
+        elif marker == "yesterday":
+            current_date = today - timedelta(days=1)
+        elif marker == "tomorrow":
+            current_date = today + timedelta(days=1)
+        else:
+            current_date = _resolve_day(marker, today)
+
+        # Extract text from this marker to the next marker (or end of string)
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text_lower)
+        segment_text = text_lower[start:end].strip().lstrip(',;').strip()
+
+        exercises = _parse_exercise_blocks(segment_text)
+        if exercises:
+            segments.append({
+                "workout_date": current_date.isoformat(),
+                "notes": "",
+                "exercises": exercises
+            })
+
+    # Also check for text before the first marker
+    if matches:
+        before = text_lower[:matches[0].start()].strip().rstrip(',;').strip()
+        if before and len(before) > 3:
+            exercises = _parse_exercise_blocks(before)
+            if exercises:
+                segments.insert(0, {
+                    "workout_date": today.isoformat(),
+                    "notes": "",
+                    "exercises": exercises
+                })
+
+    if not segments:
+        # Fallback: treat whole text as today
+        exercises = _parse_exercise_blocks(text_lower)
+        segments = [{"workout_date": today.isoformat(), "notes": "", "exercises": exercises}]
+
+    return {"workouts": segments}
 
 
 def _standardize_name(name: str) -> str:
@@ -267,31 +332,39 @@ def _standardize_name(name: str) -> str:
 
 
 def _validate_parsed(parsed: dict, today: date) -> dict:
-    """Validate and clean up LLM-parsed output."""
-    # Ensure workout_date is valid
-    try:
-        datetime.strptime(parsed.get("workout_date", ""), "%Y-%m-%d")
-    except (ValueError, TypeError):
-        parsed["workout_date"] = today.isoformat()
+    """Validate and clean up LLM-parsed output. Normalises to {{"workouts": [...]}} format."""
 
-    if "notes" not in parsed:
-        parsed["notes"] = ""
+    def _clean_exercises(ex_list):
+        clean = []
+        for ex in ex_list:
+            c = {
+                "name": _standardize_name(ex.get("name", "unknown")),
+                "sets": int(ex.get("sets", 0)) if ex.get("sets") is not None else 0,
+                "reps": int(ex.get("reps", 0)) if ex.get("reps") is not None else 0,
+                "load_kg": float(ex["load_kg"]) if ex.get("load_kg") is not None else None,
+                "rir": float(ex["rir"]) if ex.get("rir") is not None else None,
+                "comments": str(ex.get("comments", "")),
+            }
+            if c["sets"] > 0 and c["reps"] > 0:
+                clean.append(c)
+        return clean
 
-    if "exercises" not in parsed or not isinstance(parsed["exercises"], list):
-        parsed["exercises"] = []
-
-    clean_exercises = []
-    for ex in parsed["exercises"]:
-        clean = {
-            "name": _standardize_name(ex.get("name", "unknown")),
-            "sets": int(ex.get("sets", 0)) if ex.get("sets") is not None else 0,
-            "reps": int(ex.get("reps", 0)) if ex.get("reps") is not None else 0,
-            "load_kg": float(ex["load_kg"]) if ex.get("load_kg") is not None else None,
-            "rir": float(ex["rir"]) if ex.get("rir") is not None else None,
-            "comments": str(ex.get("comments", "")),
+    def _clean_workout(w):
+        try:
+            datetime.strptime(w.get("workout_date", ""), "%Y-%m-%d")
+        except (ValueError, TypeError):
+            w["workout_date"] = today.isoformat()
+        return {
+            "workout_date": w["workout_date"],
+            "notes": str(w.get("notes", "")),
+            "exercises": _clean_exercises(w.get("exercises", []))
         }
-        if clean["sets"] > 0 and clean["reps"] > 0:
-            clean_exercises.append(clean)
 
-    parsed["exercises"] = clean_exercises
-    return parsed
+    # New format: {"workouts": [...]}
+    if "workouts" in parsed and isinstance(parsed["workouts"], list):
+        parsed["workouts"] = [_clean_workout(w) for w in parsed["workouts"]]
+        parsed["workouts"] = [w for w in parsed["workouts"] if w["exercises"]]
+        return parsed
+
+    # Old format: {"workout_date": ..., "exercises": [...]} → normalise
+    return {"workouts": [_clean_workout(parsed)]}
