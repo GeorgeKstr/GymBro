@@ -1,19 +1,78 @@
 """
-LM Studio integration: parse natural language gym entries into structured data.
+AI integration: parse natural language gym entries into structured data.
 
-LM Studio runs an OpenAI-compatible API, typically at http://localhost:1234/v1
+Two provider modes (chosen automatically, driven by .env / environment):
+  - Cloud (default when AI_API_KEY is set): any OpenAI-compatible provider —
+    OpenAI, Groq, OpenRouter, DeepSeek, Together, LM Studio behind a VPN, ...
+    Configured via AI_BASE_URL / AI_API_KEY / AI_MODEL.
+  - LM Studio (local fallback/development): AI_PROVIDER=lmstudio or no API
+    key present → uses LM_STUDIO_URL without authentication.
+
+If the provider is unreachable, a regex fallback parser is used.
 """
 
 import json
 import re
 import httpx
+import config
 from datetime import date, datetime, timedelta
 from typing import Optional
 
-# Default LM Studio endpoint
-LM_STUDIO_URL = "http://localhost:1234/v1/chat/completions"
+# Local LM Studio endpoint (development / offline testing)
+LM_STUDIO_URL = config.get("LM_STUDIO_URL", "http://localhost:1234/v1/chat/completions")
 
-PARSE_SYSTEM_PROMPT = """You are a gym workout parser. Extract structured workout data from the user's natural language description.
+
+def _ai_settings(lm_studio_url: str | None = None) -> dict:
+    """Resolve which AI endpoint to use.
+
+    Cloud is active when AI_API_KEY is configured and AI_PROVIDER is not
+    explicitly 'lmstudio'. Otherwise the local LM Studio endpoint is used
+    (allowing the client to override the URL, useful for testing).
+    """
+    key = config.get("AI_API_KEY") or ""
+    provider = (config.get("AI_PROVIDER") or "").lower().strip()
+    use_cloud = bool(key) and provider != "lmstudio"
+
+    if use_cloud:
+        base = (config.get("AI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+        return {
+            "url": f"{base}/chat/completions",
+            "model": config.get("AI_MODEL", "gpt-4o-mini"),
+            "key": key,
+            "cloud": True,
+            "no_think": (config.get("AI_NO_THINK") or "true").strip().lower() in ("1", "true", "yes"),
+            "provider_name": _provider_name(base),
+        }
+
+    return {
+        "url": lm_studio_url or LM_STUDIO_URL,
+        "model": "local-model",  # LM Studio serves the loaded model
+        "key": "",
+        "cloud": False,
+        "no_think": (config.get("AI_NO_THINK") or "true").strip().lower() in ("1", "true", "yes"),
+        "provider_name": "lmstudio",
+    }
+
+
+def _provider_name(base: str) -> str:
+    host = re.sub(r"^https?://", "", base).split("/")[0]
+    if "openai" in host:
+        return "openai"
+    if "openrouter" in host:
+        return "openrouter"
+    if "groq" in host:
+        return "groq"
+    if "deepseek" in host:
+        return "deepseek"
+    if "together" in host:
+        return "together"
+    if "anthropic" in host:
+        return "anthropic"
+    if "gemini" in host or "generativelanguage" in host:
+        return "gemini"
+    return host
+
+PARSE_SYSTEM_PROMPT = """You are a gym workout assistant helping both TRAINERS (planning future sessions) and TRAINEES (logging past sessions). Extract structured data from the user's natural language description as a PLAN MERGE — you are told existing data will be kept.
 
 Output ONLY valid JSON — no markdown, no explanation. Use this exact schema:
 
@@ -33,12 +92,25 @@ Output ONLY valid JSON — no markdown, no explanation. Use this exact schema:
         }}
       ]
     }}
+  ],
+  "blocks": [
+    {{
+      "block_name": "training block name (from phrases like 'start a block called Hypertrophy')",
+      "color": "#rrggbb colour from the text, or empty string",
+      "days": ["YYYY-MM-DD", "..."]
+    }}
   ]
 }}
 
+The "blocks" array is OPTIONAL — only output it when the text is about training BLOCKS (e.g. "create a block called Strength for the next 4 weeks", "assign next week's Mon/Wed/Fri to my Hypertrophy block", "start a new block"). Enumerate every concrete workout day covered by the block (same relative-date expansion rules as above). Leave "color" as "" unless a colour is named.
+
 Rules:
 - ALWAYS output the "workouts" array, even if there is only one workout.
-- The user may describe MULTIPLE DAYS. Split them into separate workout objects — one per date.
+- MERGE SEMANTICS: you are ADDING to existing data. The application keeps any exercises the user already has on those days and does not delete anything. Only describe exercises that should exist after this instruction.
+- EXPAND RECURRING REQUESTS: "every Tuesday for the next 4 weeks", "Mon/Wed/Fri for 3 weeks starting tomorrow" etc. must be enumerated as one workout object per concrete date.
+- DURATION RANGES: "for the next 20 days", "every day for 2 weeks" etc. mean one identical workout PER DAY for the whole span — enumerate one workout object per date starting today. "for N weeks" with named weekdays (e.g. "Mon/Wed/Fri for 3 weeks") means only those weekdays.
+- PERCENTAGE loads: "70% to 85%" without an absolute weigh-in → ramp across the range dates and say e.g. comments="~70-85% of 1RM". If a base load is given use it.
+- MULTI-DAY descriptions: split into one workout object per date.
 - If the user says "today", use TODAY'S DATE.
 - If the user says "Monday" / "this tuesday" / "last Wednesday" etc., resolve each relative to today.
 - If they say "yesterday" or "tomorrow", resolve those.
@@ -50,13 +122,17 @@ Rules:
 - Standardise exercise names (e.g., "bench" → "bench press", "squats" → "squat").
 - If multiple exercises are mentioned for the same day, put them all in that day's exercises array.
 - If sets/reps are missing, use null but try to infer from context.
+- BLOCKS: recurring-block requests must enumerate their days in the blocks array (one entry per block); do NOT put block-only text into workouts.
 
 Examples:
 Input: "today I did 5x5 on bench at 180kg"
 Output: {{"workouts":[{{"workout_date":"<today>","notes":"","exercises":[{{"name":"bench press","sets":5,"reps":5,"load_kg":180,"rir":null,"comments":""}}]}}]}}
 
 Input: "monday bench 5x5 at 180, tuesday squat 3x8 at 140 rir 2"
-Output: {{"workouts":[{{"workout_date":"<monday>","notes":"","exercises":[{{"name":"bench press","sets":5,"reps":5,"load_kg":180,"rir":null,"comments":""}}]}},{{"workout_date":"<tuesday>","notes":"","exercises":[{{"name":"squat","sets":3,"reps":8,"load_kg":140,"rir":2,"comments":""}}]}}]}}
+Output: {{"workouts":[{{"workout_date":"<monday>","notes":"","exercises":[{{"name":"bench press","sets":5,"reps":5,"load_kg":180,"rir":null,"comments":""}}]}},{{"workout_date":"<tuesday>","notes":"","exercises":[{{"name":"squat","sets":3,"reps":8,"load_kg":140,"rir":2,"comments":""}}]}}],"blocks":[]}}
+
+Input: "start a 3-week strength block, training Mon/Wed/Fri"
+Output: {{"workouts":[],"blocks":[{{"block_name":"strength","color":"","days":["<this monday>","<wed>","<fri>","<next monday>","<next wed>","<next fri>","<mon after>","<wed after>","<fri after>"]}}]}}
 
 Today's date is: {today}
 This Tuesday is: {this_tuesday}
@@ -64,6 +140,48 @@ Last Monday was: {last_monday}
 Yesterday was: {yesterday}
 Tomorrow is: {tomorrow}
 """
+
+
+DURATION_RANGE_RE = re.compile(
+    r'\b(?:for\s+)?(?:the\s+)?next\s+(\d+)\s+(day|week)s?\b'
+    r'|\bfor\s+(\d+)\s+(day|week)s?\b', re.I)
+
+
+def _expand_duration_range(text: str, parsed: dict, today: date) -> dict:
+    """Deterministic safety net for duration-range requests like
+    'for the next 20 days add a 5x5 squat at 200kg'.
+
+    When the text names a day-count range and the model returned exactly
+    ONE workout, replicate that workout across every date of the span
+    (starting today). Skipped when the request is block-related (blocks
+    enumerate their own days) or the model already enumerated multiple
+    workouts."""
+    if not isinstance(parsed, dict):
+        return parsed
+    m = DURATION_RANGE_RE.search(text or "")
+    if not m:
+        return parsed
+    n = int(m.group(1) or m.group(3))
+    unit = (m.group(2) or m.group(4) or "").lower()
+    if unit == "week":
+        # weekly spans only expand when every single day is implied
+        if not re.search(r'\b(every day|daily|each day)\b', text or "", re.I):
+            return parsed
+        n *= 7
+    n = max(1, min(n, 90))
+    workouts = parsed.get("workouts") or []
+    if parsed.get("blocks"):
+        return parsed
+    if len(workouts) != 1 or not workouts[0].get("exercises"):
+        return parsed
+    template = workouts[0]
+    expanded = []
+    for i in range(n):
+        w = dict(template)
+        w["workout_date"] = (today + timedelta(days=i)).isoformat()
+        expanded.append(w)
+    parsed["workouts"] = expanded
+    return parsed
 
 
 def _get_relative_dates(today: date) -> dict:
@@ -94,27 +212,40 @@ def _get_relative_dates(today: date) -> dict:
 async def parse_workout_text(text: str, today: Optional[date] = None,
                              lm_studio_url: Optional[str] = None) -> dict:
     """
-    Send natural language text to LM Studio and parse into structured workout data.
-    Falls back to regex-based parsing if LM Studio is unavailable.
+    Send natural language text to the configured AI provider and parse into
+    structured workout data. Falls back to regex-based parsing on failure.
+
+    When a cloud provider is configured, requests go there with the server's
+    API key; client-provided lm_studio_url overrides are ignored for safety.
     """
     if today is None:
         today = date.today()
 
-    url = lm_studio_url or LM_STUDIO_URL
+    ai = _ai_settings(lm_studio_url if not ai_cloud_configured() else None)
     dates = _get_relative_dates(today)
     system_prompt = PARSE_SYSTEM_PROMPT.format(**dates)
 
+    headers = {"Content-Type": "application/json"}
+    if ai["key"]:
+        headers["Authorization"] = f"Bearer {ai['key']}"
+
+    payload = {
+        "model": ai["model"],
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text}
+        ],
+        "temperature": 0.1,
+        "max_tokens": 4096,  # long recurring expansions (e.g. 20 days) need room
+    }
+    # Non-thinking mode (Qwen-style chat template switch); honoured by
+    # OpenCode Zen, vLLM and LM Studio. Disable with AI_NO_THINK=false.
+    if ai["no_think"]:
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, json={
-                "model": "local-model",  # LM Studio ignores this, uses whatever is loaded
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": text}
-                ],
-                "temperature": 0.1,
-                "max_tokens": 1024
-            })
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(ai["url"], json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
             content = data["choices"][0]["message"]["content"].strip()
@@ -123,13 +254,19 @@ async def parse_workout_text(text: str, today: Optional[date] = None,
             json_match = re.search(r'\{[\s\S]*\}', content)
             if json_match:
                 parsed = json.loads(json_match.group(0))
-                return _validate_parsed(parsed, today)
+                return _expand_duration_range(text, _validate_parsed(parsed, today), today)
             else:
                 raise ValueError(f"No JSON found in response: {content[:200]}")
 
     except (httpx.ConnectError, httpx.TimeoutException, Exception) as e:
-        print(f"LM Studio unavailable ({e}), falling back to regex parser")
+        print(f"AI provider unavailable ({ai['provider_name']} @ {ai['url']}): {e}; "
+              f"falling back to regex parser")
         return fallback_parse(text, today)
+
+
+def ai_cloud_configured() -> bool:
+    """True when a cloud provider is active (key set, not forced to lmstudio)."""
+    return _ai_settings()["cloud"]
 
 
 def _resolve_day(day_name: str, today: date) -> date:
@@ -181,56 +318,108 @@ def _resolve_day(day_name: str, today: date) -> date:
 
 def _parse_exercise_blocks(text: str) -> list[dict]:
     """Extract exercise entries from text using regex."""
-    text_clean = re.sub(r'\b(?:at|@)\s*(\d+(?:\.\d+)?)\s*(kg|lb)?', r'@\1\2', text.lower())
+    text_clean = re.sub(r'\b(?:at|@)\s*(\d+(?:\.\d+)?)\s*(kg|lb)?\s*', r'@\1\2 ', text.lower())
+    # Strip leading filler phrases so "add a 5x5 squat" parses as "5x5 squat"
+    text_clean = re.sub(
+        r'^\s*(?:please\b|can you\b|could you\b)?[\s,]*'
+        r'(?:i\s+)?(?:want\s+to\s+|would\s+like\s+to\s+)?'
+        r'(?:add|added|log|logged|did|do|plan|planned|schedule|scheduled)\s+'
+        r'(?:a\s+|an\s+|the\s+|my\s+)?', '', text_clean)
     block_pat = r'([a-z][a-z\s]*?)\s*(\d+x\d+|\d+\s*x\s*\d+|single|double|triple)\s*(?:@\s*([\d.]+)\s*(kg|lb)?)?(?:\s*rir\s*(\d+))?'
 
     exercises = []
+    last_name = None
     for m in re.findall(block_pat, text_clean):
         name = m[0].strip().rstrip(',').rstrip('and').strip()
         # Strip leading "and "
         name = re.sub(r'^and\s+', '', name).strip()
-        if not name or len(name) < 2 or name in ('and', 'or', 'then'):
-            continue
-
         scheme_str = m[1].strip()
-        if scheme_str == 'single':
-            sets, reps = 1, 1
-        elif scheme_str == 'double':
-            sets, reps = 1, 2
-        elif scheme_str == 'triple':
-            sets, reps = 1, 3
+        # A scheme whose "name" is just a connector ("... single at 210 and
+        # 7x5 at 180") is a second entry for the previous exercise.
+        if (not name or name in ('and', 'or', 'then')) and last_name and exercises:
+            name = last_name
+        elif not name or len(name) < 2 or name in ('and', 'or', 'then'):
+            continue
         else:
-            scheme_clean = re.sub(r'\s+', '', scheme_str)
-            parts = scheme_clean.split('x')
-            if len(parts) == 2:
-                try:
-                    sets = int(parts[0])
-                    reps = int(parts[1])
-                except ValueError:
-                    continue
-            else:
+            last_name = name
+
+        ex = _build_exercise(name, scheme_str, m[2], m[3], m[4])
+        if ex:
+            exercises.append(ex)
+
+    # Scheme-first phrasing: "5x5 squat at 200kg" (name AFTER the scheme).
+    # The primary pattern only matches name-before-scheme order.
+    if not exercises:
+        inv_pat = (r'(\d+x\d+|\d+\s*x\s*\d+|single|double|triple)\s+'
+                   r'([a-z][a-z\s]*?)'
+                   r'(?:\s*(?:@|at\s+)\s*([\d.]+)\s*(kg|lb)?)?'
+                   r'(?:\s*rir\s*(\d+))?'
+                   r'(?=\s*(?:\brir\b|[,;.!]|$))')
+        for m in re.findall(inv_pat, text_clean):
+            name = m[1].strip().rstrip(',').rstrip('and').strip()
+            name = re.sub(r'^and\s+', '', name).strip()
+            if not name or len(name) < 2:
                 continue
-
-        load_val = float(m[2]) if m[2] else None
-        load_unit = m[3] if m[3] else 'kg'
-        if load_val and load_unit == 'lb':
-            load_val = round(load_val * 0.453592, 1)
-        rir_val = float(m[4]) if m[4] else None
-
-        exercises.append({
-            "name": _standardize_name(name),
-            "sets": sets,
-            "reps": reps,
-            "load_kg": load_val,
-            "rir": rir_val,
-            "comments": ""
-        })
+            ex = _build_exercise(name, m[0].strip(), m[2], m[3], m[4])
+            if ex:
+                exercises.append(ex)
     return exercises
+
+
+def _build_exercise(name: str, scheme_str: str,
+                    load_val: str | None, load_unit: str | None,
+                    rir_val: str | None) -> dict | None:
+    """Turn a name + rep-scheme + load/rir captures into an exercise dict."""
+    # The lazy name capture often swallows sentence filler ("on bench",
+    # "the squat", "my deadlift"). Strip leading stop-words repeatedly.
+    for _ in range(4):
+        new_name = re.sub(r'^(?:on|of|the|a|an|my|with|and|or|i|did|did a|for)\s+', '', name)
+        if new_name == name:
+            break
+        name = new_name
+    if scheme_str == 'single':
+        sets, reps = 1, 1
+    elif scheme_str == 'double':
+        sets, reps = 1, 2
+    elif scheme_str == 'triple':
+        sets, reps = 1, 3
+    else:
+        scheme_clean = re.sub(r'\s+', '', scheme_str)
+        parts = scheme_clean.split('x')
+        if len(parts) == 2:
+            try:
+                sets = int(parts[0])
+                reps = int(parts[1])
+            except ValueError:
+                return None
+        else:
+            return None
+
+    load = float(load_val) if load_val else None
+    unit = load_unit or 'kg'
+    if load and unit == 'lb':
+        load = round(load * 0.453592, 1)
+    rir = float(rir_val) if rir_val else None
+
+    return {
+        "name": _standardize_name(name),
+        "sets": sets,
+        "reps": reps,
+        "load_kg": load,
+        "rir": rir,
+        "comments": ""
+    }
 
 
 def fallback_parse(text: str, today: date) -> dict:
     """Regex-based fallback parser with multi-day support."""
     text_lower = text.lower().strip()
+
+    # Strip duration-range phrases first ("for the next 20 days") so they
+    # don't pollute exercise-name extraction; the range itself is applied
+    # by _expand_duration_range below.
+    text_lower = DURATION_RANGE_RE.sub(' ', text_lower)
+
     day_names = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
     # Try to split by day markers: "Monday ... Tuesday ..." or "today ... yesterday ..."
@@ -251,11 +440,12 @@ def fallback_parse(text: str, today: date) -> dict:
     if not matches:
         # No day markers found — treat entire text as today
         exercises = _parse_exercise_blocks(text_lower)
-        return {"workouts": [{
+        result = {"workouts": [{
             "workout_date": today.isoformat(),
             "notes": "",
             "exercises": exercises
         }]}
+        return _expand_duration_range(text, result, today)
 
     for i, m in enumerate(matches):
         marker = m.group(0).strip()
@@ -364,7 +554,66 @@ def _validate_parsed(parsed: dict, today: date) -> dict:
     if "workouts" in parsed and isinstance(parsed["workouts"], list):
         parsed["workouts"] = [_clean_workout(w) for w in parsed["workouts"]]
         parsed["workouts"] = [w for w in parsed["workouts"] if w["exercises"]]
+        # optional blocks [{block_name, color, days:[...]}]
+        blocks = parsed.get("blocks") if isinstance(parsed.get("blocks"), list) else []
+        clean_blocks = []
+        for b in blocks:
+            if not isinstance(b, dict):
+                continue
+            name = str(b.get("block_name", "")).strip()
+            if not name:
+                continue
+            days = []
+            for d in (b.get("days") or []):
+                try:
+                    datetime.strptime(str(d), "%Y-%m-%d")
+                    days.append(str(d))
+                except (ValueError, TypeError):
+                    pass
+            color = str(b.get("color") or "").strip()
+            if color and not re.match(r"^#[0-9a-fA-F]{6}$", color):
+                color = ""
+            if days:
+                clean_blocks.append({"block_name": name[:60], "color": color, "days": sorted(set(days))})
+        parsed["blocks"] = clean_blocks
         return parsed
 
     # Old format: {"workout_date": ..., "exercises": [...]} → normalise
     return {"workouts": [_clean_workout(parsed)]}
+
+
+def ai_chat_reply(context_messages: list[dict], system_note: str) -> str:
+    """Generic chat completion for the coach/trainee chat widget.
+
+    context_messages: [{role: 'system'|'user'|'assistant', content: ...}]
+    Returns plain text, or raises when no AI provider is configured.
+    """
+    ai = _ai_settings()
+    headers = {"Content-Type": "application/json"}
+    if ai["key"]:
+        headers["Authorization"] = f"Bearer {ai['key']}"
+    payload = {
+        "model": ai["model"],
+        "messages": [
+            {"role": "system", "content": system_note},
+            *context_messages,
+        ],
+        "temperature": 0.4,
+        "max_tokens": 300,
+    }
+    if ai.get("no_think"):
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+
+    import asyncio
+    async def _post():
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(ai["url"], json=payload, headers=headers)
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"].strip()
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = None
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor() as ex:
+        return ex.submit(asyncio.run, _post()).result()
