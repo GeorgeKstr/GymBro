@@ -1,0 +1,15 @@
+# Caddy reverse proxy — automatic HTTPS
+# Install: sudo apt install -y caddy   (DO Ubuntu images have caddy in apt? use cloudsmith repo if not)
+#   sudo cp deploy/Caddyfile /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+# Replace gym.example.com with your DNS A-record pointing at the droplet IP.
+
+gym.example.com {
+    encode gzip
+    reverse_proxy 127.0.0.1:8020
+}
+
+# Example for root + www pair:
+# www.yourdomain.com {
+#     redir https://yourdomain.com{uri} permanent
+# }

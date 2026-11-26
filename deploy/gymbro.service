@@ -1,0 +1,35 @@
+# GymBro systemd service
+# Install on the droplet:
+#   sudo cp deploy/gymbro.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now gymbro
+# Logs:  journalctl -u gymbro -f
+
+[Unit]
+Description=GymBro fitness tracker (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+# The app runs as this unprivileged user; create it first:
+#   sudo useradd -r -m -d /opt/gymbro -s /usr/sbin/nologin gymbro
+User=gymbro
+Group=gymbro
+WorkingDirectory=/opt/gymbro
+# start.sh handles .env bootstrap/backup; uvicorn binds 127.0.0.1:8020 (proxied)
+ExecStart=/opt/gymbro/start.sh
+Restart=always
+RestartSec=3
+Environment=PORT=8020
+Environment=HOST=127.0.0.1
+
+# Mild hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+# SQLite writes live in the app dir — keep these writable if you enable
+# ProtectHome: ReadWritePaths=/opt/gymbro
+
+[Install]
+WantedBy=multi-user.target
